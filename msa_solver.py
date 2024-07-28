@@ -14,16 +14,28 @@ class CVX_ADMM_MSA:
         self.Y = self.tensor5D_init(self.T2)
         self.C = self.set_C(self.C, self.allSeqs)
         self.print_C(self.C)
+        self.mu = MU
+        self.prev_CoZ = MAX_DOUBLE
+        for iter in range(MAX_ADMM_ITER):
+            # First subproblem
+            for n in self.numSeq:
+                self.first_subproblem(self.W_1[n], self.W_2[n], self.Y[n], self.C[n], self.mu, self.allSeqs[n])
 
-    def print_C(self, C):
-        T0 = len(C)
-        for n in range(T0):
-            T1, T2, T3, T4 = C[n].shape
-            for i in range(T1):
-                for j in range(T2):
-                    for k in range(T3):
-                        for m in range(T4):
-                            print(f"C[{n}][{i}][{j}][{k}][{m}] = {int(C[n][i][j][k][m])}")
+            # Second subproblem
+            self.second_subproblem(self.W_1, self.W_2, self.Y, self.mu, self.allSeqs, self.lenSeqs)
+
+            # Dual upgrade
+            for n in self.numSeq:
+                self.tensor4D_lin_update(self.Y[n], self.W_1[n], self.W_2[n], self.mu)
+
+    def first_subproblem(self, W_1, W_2, Y, C, mu, data_seq):
+        pass
+
+    def second_subproblem(self, W_1, W_2, Y, mu, allSeqs, lenSeqs):
+        pass
+
+    def tensor4D_lin_update(self, Y, W_1, W_2, mu):
+        pass
 
     def set_C(self, C, allSeqs):
         T0 = len(C)
@@ -62,8 +74,8 @@ class CVX_ADMM_MSA:
                                 C[n][i][j][k][m] = C_M if self.dna2T3idx(allSeqs[n][i]) == m - MTH_BASE_IDX else C_MM
                             #C[n][i][j][k][m] += PERB_EPS * (np.random.rand())
                             #print((n,i,j,k,m), allSeqs[n][i], C[n][i][j][k][m])
-        
         return C
+    
     
     def dna2T3idx(self, dna):
         m = {'A': 0, 'T': 1, 'C': 2, 'G': 3, '*': 4, '#': 5, GAP_NOTATION: -1}
@@ -72,6 +84,16 @@ class CVX_ADMM_MSA:
         else:
             print("error", dna)
             exit()
+
+    def print_C(self, C):
+        T0 = len(C)
+        for n in range(T0):
+            T1, T2, T3, T4 = C[n].shape
+            for i in range(T1):
+                for j in range(T2):
+                    for k in range(T3):
+                        for m in range(T4):
+                            print(f"C[{n}][{i}][{j}][{k}][{m}] = {int(C[n][i][j][k][m])}")
 
     def tensor5D_init(self, init_T2):
         tensor5D = []
