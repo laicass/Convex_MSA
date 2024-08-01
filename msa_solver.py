@@ -31,10 +31,10 @@ class CVX_ADMM_MSA:
                 self.tensor4D_lin_update(self.Y[n], self.W_1[n], self.W_2[n], self.mu)
 
     def first_subproblem(self, W_1, W_2, Y, C, mu, data_seq):
-        W_1 = np.zeros_like(W_1)
+        W_1.fill(0)
         M = Y - mu * W_2
         alpha_lookup = {}
-        for fw_iter in range(MAX_1st_FW_ITER):
+        for fw_iter in range(MAX_1st_FW_ITER+1):
             S_atom, trace = self.cube_smith_waterman(M, C, data_seq)
             S_atom = np.array(S_atom).reshape((-1,4))
             S_atom = tuple(map(tuple, S_atom))
@@ -45,7 +45,6 @@ class CVX_ADMM_MSA:
             gfw_S -= sum([(C[idx] + M[idx]) for idx in S_atom])
 
             gfw = gfw_S + gfw_W
-            print(gfw)
             if fw_iter > 0 and gfw < FW1_GFW_EPS:
                 break
 
@@ -78,7 +77,7 @@ class CVX_ADMM_MSA:
             if REINIT_W_ZERO_TOGGLE and fw_iter == 0:
                 gamma = 1.0
             gamma = min(max(gamma, 0.0), gamma_max)
-
+            print("gamma:", gamma)
             # update W_1
             for idx in map(tuple, S_atom):
                 W_1[idx] += gamma
@@ -86,6 +85,7 @@ class CVX_ADMM_MSA:
             for idx in map(tuple, V_atom):
                 W_1[idx] -= gamma
                 M[idx] -= mu * gamma
+            
 
             if len(alpha_lookup) == 0:
                 alpha_lookup[S_atom] = 1.0
@@ -98,8 +98,6 @@ class CVX_ADMM_MSA:
                     alpha_lookup.pop(V_atom)
                 else:
                     alpha_lookup[V_atom] -= gamma
-
-        exit(0)
 
     def second_subproblem(self, W_1, W_2, Y, mu, allSeqs, lenSeqs):
         pass
