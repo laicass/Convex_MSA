@@ -28,6 +28,7 @@ def main():
     T2 = get_init_model_length (lenSeqs) + LENGTH_OFFSET
     sequence_dump(allSeqs)
     W = CVX_ADMM_MSA(allSeqs, lenSeqs, T2)
+    print(W.shape)
 
 if __name__ == "__main__":
     main()

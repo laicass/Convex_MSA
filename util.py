@@ -1,4 +1,5 @@
 from config import *
+import numpy as np
 
 def print_cube(cube):
     T1 = len(cube)
@@ -9,6 +10,11 @@ def print_cube(cube):
             for k in range(T3):
                 print(cube[i][j][k].toString())
 
+def Frobenius_prod(A, B):
+    p = A * B
+    return np.sum(p, axis=None)
+
+
 def print_C(C):
     T0 = len(C)
     for n in range(T0):
@@ -18,6 +24,24 @@ def print_C(C):
                 for k in range(T3):
                     for m in range(T4):
                         print(f"C[{n}][{i}][{j}][{k}][{m}] = {C[n][i][j][k][m]}")
+
+def move2T3idx(m):
+    mapping = {
+        0: -1,
+        DELETION_A: 0,
+        MATCH_A: 0,
+        DELETION_T: 1,
+        MATCH_T: 1,
+        DELETION_C: 2,
+        MATCH_C: 2,
+        DELETION_G: 3,
+        MATCH_G: 3,
+        DELETION_START: 4,
+        MATCH_START: 4,
+        DELETION_END: 5,
+        MATCH_END: 5
+    }
+    return mapping.get(m, -2)
 
 def dna2T3idx(dna):
     m = {'A': 0, 'T': 1, 'C': 2, 'G': 3, '*': 4, '#': 5, GAP_NOTATION: -1}

@@ -15,7 +15,6 @@ class CVX_ADMM_MSA:
         self.Y = self.tensor5D_init(self.T2)
         self.C = self.set_C(self.C, self.allSeqs)
 
-        #util.print_C(self.C)
         self.mu = MU
         self.prev_CoZ = MAX_DOUBLE
         for iter in range(MAX_ADMM_ITER):
@@ -24,11 +23,31 @@ class CVX_ADMM_MSA:
                 self.first_subproblem(self.W_1[n], self.W_2[n], self.Y[n], self.C[n], self.mu, self.allSeqs[n])
 
             # Second subproblem
-            self.second_subproblem(self.W_1, self.W_2, self.Y, self.mu, self.allSeqs, self.lenSeqs)
+            recSeq = self.second_subproblem(self.W_1, self.W_2, self.Y, self.mu, self.allSeqs, self.lenSeqs)
+            print(recSeq)
 
             # Dual upgrade
-            for n in self.numSeq:
-                self.tensor4D_lin_update(self.Y[n], self.W_1[n], self.W_2[n], self.mu)
+            for n in range(self.numSeq):
+                self.Y[n] += self.mu * (self.W_1[n] - self.W_2[n])
+            CoZ = sum([util.Frobenius_prod(self.C[n], self.W_2[n]) for n in range(self.numSeq)])
+            W1mW2 = max([np.max(np.abs(self.W_1[n]-self.W_2[n])) for n in range(self.numSeq)])
+            print("CoZ:", CoZ, "W1mW2:", W1mW2)
+
+            for n in range(self.numSeq):
+                model_seq = recSeq[1:-1]
+                data_seq = self.allSeqs[n][1:-1]
+
+            # Align sequences locally
+
+            # Get rounded objective
+
+            # 2.f Stopping ADMM
+            if ADMM_EARLY_STOP_TOGGLE and iter > MIN_ADMM_ITER:
+                if W1mW2 < EPS_Wdiff:
+                    print("CoZ Converges. ADMM early stop!")
+                    break
+            prev_CoZ = CoZ
+        return self.W_2
 
     def first_subproblem(self, W_1, W_2, Y, C, mu, data_seq):
         W_1.fill(0)
@@ -77,7 +96,7 @@ class CVX_ADMM_MSA:
             if REINIT_W_ZERO_TOGGLE and fw_iter == 0:
                 gamma = 1.0
             gamma = min(max(gamma, 0.0), gamma_max)
-            print("gamma:", gamma)
+
             # update W_1
             for idx in map(tuple, S_atom):
                 W_1[idx] += gamma
@@ -100,10 +119,119 @@ class CVX_ADMM_MSA:
                     alpha_lookup[V_atom] -= gamma
 
     def second_subproblem(self, W_1, W_2, Y, mu, allSeqs, lenSeqs):
-        pass
+        numSeq = len(allSeqs)
+        T2 = W_2[0][0].shape[0]
+        delta = self.tensor5D_init(T2)
+        tensor = np.zeros((T2, NUM_DNA_TYPE, NUM_DNA_TYPE))
+        mat_insertion = np.zeros((T2, NUM_DNA_TYPE))
+        for n in range(numSeq):
+            W_2[n].fill(0)
+            delta[n] = mu * W_1[n] + Y[n]
+            i_delta = np.clip(delta[n][:,:,:,INSERTION], a_min=0.0, a_max=None)
+            mat_insertion += np.sum(i_delta, axis=0)
+            for m in range(INSERTION+1, NUM_MOVEMENT):
+                i_delta = np.clip(delta[n][:,:,:,m], a_min=0.0, a_max=None)
+                tensor[:,:,util.move2T3idx(m)] += np.sum(i_delta, axis=0)
+        alpha_lookup = {}
 
-    def tensor4D_lin_update(self, Y, W_1, W_2, mu):
-        pass
+        for fw_iter in range(MAX_2nd_FW_ITER+1):
+            trace = self.refined_viterbi_algo(tensor, mat_insertion)
+            S_atom = []
+            for t in trace:
+                sj = t.location[0]
+                sd = t.location[1]
+                sm = util.dna2T3idx(t.acidB)
+                if t.acidA == '#':
+                    break
+                for n in range(numSeq):
+                    for i in range(delta[n].shape[0]):
+                        for m in range(NUM_MOVEMENT):
+                            if delta[n][i][sj][sd][m] > 0.0:
+                                added = False
+                                if m == INSERTION or m == DEL_BASE_IDX + sm or m == MTH_BASE_IDX + sm:
+                                    added = True
+                                if added:
+                                    S_atom.append(n);S_atom.append(i);S_atom.append(sj);S_atom.append(sd);S_atom.append(m)
+            
+            # Early stopping
+            S_atom = np.array(S_atom).reshape((-1,5))
+            S_atom = tuple(map(tuple, S_atom))
+            gfw_S = gfw_W = gfw = 0.0
+            gfw_S += sum([delta[idx[0]][idx[1:]] for idx in S_atom])
+
+            for key, value in alpha_lookup.items():
+                gfw_W -= sum([delta[idx[0]][idx[1:]] * value for idx in key])
+            gfw = gfw_S + gfw_W
+            print("gfw_S=", gfw_S, "gfw_W=", gfw_W, "gfw=", gfw)
+
+            if fw_iter > 0 and gfw < FW2_GFW_EPS:
+                print("break")
+                break
+
+            # Away step
+            V_atom = tuple(tuple())
+            gamma_max = 1.0
+            if len(alpha_lookup.keys()) > 0:
+                V = []
+                for key, value in alpha_lookup.items(): 
+                    sum_delta = sum([delta[idx[0]][idx[1:]] for idx in key])
+                    V.append((sum_delta, key, value))
+                min_val, V_atom, gamma_max = min(V)
+
+            # Exact line search
+            numerator = denominator = 0.0
+            smv_lookup = {}
+            for idx in S_atom:
+                numerator += (1.0/mu)*Y[idx[0]][idx[1:]] + W_1[idx[0]][idx[1:]] - W_2[idx[0]][idx[1:]]
+                smv_lookup[idx] = 1.0
+                denominator += mu
+            for idx in V_atom:
+                numerator -= (1.0/mu)*Y[idx[0]][idx[1:]] + W_1[idx[0]][idx[1:]] - W_2[idx[0]][idx[1:]]
+                if idx not in smv_lookup:
+                    denominator += mu
+                else:
+                    denominator -= mu
+            gamma = gamma_max
+            if not denominator < 10e-6:
+                gamma = numerator/denominator
+            if REINIT_W_ZERO_TOGGLE and fw_iter == 0:
+                gamma = 1.0
+            gamma = min(max(gamma, 0.0), gamma_max)
+            print("gamma:", gamma, "gamma max:", gamma_max)
+            
+            # Update W_2
+            for idx in S_atom:
+                n,i,j,d,m = idx
+                W_2[n][idx[1:]] += gamma
+                if m == INSERTION:
+                    mat_insertion[j][d] -= (max(0.0, delta[n][idx[1:]])-max(0.0, delta[n][idx[1:]]-mu*gamma))
+                else:
+                    tensor[j][d][util.move2T3idx(m)] -= (max(0.0, delta[n][idx[1:]])-max(0.0, delta[n][idx[1:]]-mu*gamma))
+                delta[n][idx[1:]] -= mu * gamma
+            for idx in V_atom:
+                n,i,j,d,m = idx
+                W_2[n][idx[1:]] -= gamma
+                if m == INSERTION:
+                    mat_insertion[j][d] -= (max(0.0, delta[n][idx[1:]])-max(0.0, delta[n][idx[1:]]+mu*gamma))
+                else:
+                    tensor[j][d][util.move2T3idx(m)] -= (max(0.0, delta[n][idx[1:]])-max(0.0, delta[n][idx[1:]]+mu*gamma))
+                delta[n][idx[1:]] += mu * gamma
+
+            if len(alpha_lookup) == 0:
+                alpha_lookup[S_atom] = 1.0
+            else:
+                if S_atom in alpha_lookup:
+                    alpha_lookup[S_atom] += gamma
+                else:
+                    alpha_lookup[S_atom] = gamma
+                if alpha_lookup[V_atom] - gamma < 1e-6:
+                    alpha_lookup.pop(V_atom)
+                else:
+                    alpha_lookup[V_atom] -= gamma
+        
+        recSeq = [t.acidB for t in trace]
+        return recSeq
+
 
     def cube_smith_waterman(self, M, C, data_seq):
         trace = []
@@ -234,6 +362,33 @@ class CVX_ADMM_MSA:
             S_atom.append(m)
         return S_atom, trace
     
+    def refined_viterbi_algo(self, transition, mat_insertion):
+        J, D1, D2 = transition.shape
+        plane = [[util.Cell(2) for _ in range(D2)] for _ in range(J+1)]
+        for j in range(J):
+            t = np.array([c.score for c in plane[j]]) + mat_insertion[j] # size = D1
+            score_map = (transition[j].T + t)[:,:-1]
+            max_score = np.max(score_map, axis=1)
+            max_d1 = np.argmax(score_map, axis=1)
+        
+            jp = j + 1
+            for d2 in range(D2):
+                jp = j + 1
+                plane[jp][d2].location[0] = j
+                plane[jp][d2].location[1] = max_d1[d2]
+                plane[jp][d2].score = max_score[d2]
+                plane[jp][d2].acidA = util.T3idx2dna(max_d1[d2])
+                plane[jp][d2].acidB = util.T3idx2dna(d2)
+        
+        max_score, max_end_pos = max([(plane[j][END_IDX].score, j) for j in range(1,J+1)])
+
+        trace = []
+        trace.insert(0, plane[max_end_pos][END_IDX])
+        for j in range(max_end_pos-1, 0, -1):
+            last_d2 = util.dna2T3idx(trace[0].acidA)
+            trace.insert(0, plane[j][last_d2])
+        return trace
+
 
     def set_C(self, C, allSeqs):
         T0 = len(C)
