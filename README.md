@@ -5,3 +5,4 @@
 - first subproblem
 - second subproblem
 - return common matching seq
+- local alignment
