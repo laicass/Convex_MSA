@@ -1,4 +1,4 @@
-trainFname = None
+WRITEFILE = True
 LENGTH_OFFSET = 0
 MU = 1.0
 PERB_EPS = 0.0
@@ -29,9 +29,9 @@ EPS_Wdiff = 0.001
 
 # Define Scores and Other Constants
 GAP_NOTATION = '-'
-C_I = 1  # penalty of insertion
-C_D = 2  # penalty of deletion
-C_MM = 3 # penalty of mismatch
+C_I = 1.8  # penalty of insertion
+C_D = 1.8  # penalty of deletion
+C_MM = 2.2 # penalty of mismatch
 C_M = 0    # penalty of match
 HIGH_COST = 999999
 NO_COST = 0

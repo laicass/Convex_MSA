@@ -17,6 +17,7 @@ class CVX_ADMM_MSA:
 
         self.mu = MU
         self.prev_CoZ = MAX_DOUBLE
+        self.recSeq = None
         for iter in range(MAX_ADMM_ITER):
             # First subproblem
             for n in range(self.numSeq):
@@ -25,6 +26,7 @@ class CVX_ADMM_MSA:
             # Second subproblem
             recSeq = self.second_subproblem(self.W_1, self.W_2, self.Y, self.mu, self.allSeqs, self.lenSeqs)
             print(recSeq)
+            self.recSeq = recSeq
 
             # Dual upgrade
             for n in range(self.numSeq):
@@ -32,14 +34,10 @@ class CVX_ADMM_MSA:
             CoZ = sum([util.Frobenius_prod(self.C[n], self.W_2[n]) for n in range(self.numSeq)])
             W1mW2 = max([np.max(np.abs(self.W_1[n]-self.W_2[n])) for n in range(self.numSeq)])
             print("CoZ:", CoZ, "W1mW2:", W1mW2)
-
+            print("ADMM iter =", iter)
             for n in range(self.numSeq):
                 model_seq = recSeq[1:-1]
                 data_seq = self.allSeqs[n][1:-1]
-
-            # Align sequences locally
-
-            # Get rounded objective
 
             # 2.f Stopping ADMM
             if ADMM_EARLY_STOP_TOGGLE and iter > MIN_ADMM_ITER:
@@ -47,7 +45,6 @@ class CVX_ADMM_MSA:
                     print("CoZ Converges. ADMM early stop!")
                     break
             prev_CoZ = CoZ
-        return self.W_2
 
     def first_subproblem(self, W_1, W_2, Y, C, mu, data_seq):
         W_1.fill(0)
@@ -231,7 +228,104 @@ class CVX_ADMM_MSA:
         
         recSeq = [t.acidB for t in trace]
         return recSeq
+    
+    @staticmethod
+    def smith_waterman(seqA, seqB):
+        plane = [[util.Cell(2) for _ in range(len(seqA)+1)] for _ in range(len(seqB)+1)]
+        trace = []
+        nRow = len(plane)
+        nCol = len(plane[0])
+        for i in range(nRow):
+            for j in range(nCol):
+                plane[i][j].location[0] = i
+                plane[i][j].location[1] = j
+                if i == 0 and j == 0:
+                    continue
+                if i == 0 or j == 0:
+                    plane[i][j].score = i * C_I + j * C_D
+                    plane[i][j].action = INSERTION if i > 0 else DELETION_A
+                    plane[i][j].acidA = GAP_NOTATION if i > 0 else seqA[j-1]
+                    plane[i][j].acidB = GAP_NOTATION if j > 0 else seqB[i-1]
+                    continue
 
+                acidA = seqA[j-1]
+                acidB = seqB[i-1]
+                mscore = C_M if acidA == acidB else C_MM
+                mm_score = plane[i-1][j-1].score + mscore
+
+                del_score = MAX_DOUBLE
+                l = 1
+                while j - l > 0:
+                    del_score = min(del_score, plane[i][j-l].score + l * C_D)
+                    l+=1
+
+                ins_score = MAX_DOUBLE
+                l = 1
+                while i - l > 0:
+                    ins_score = min(ins_score, plane[i-l][j].score + l * C_I)
+                    l+=1
+
+                opt_score = MAX_DOUBLE
+                if ins_score <= min(mm_score, del_score):
+                    opt_score = ins_score
+                    opt_action = INSERTION
+                    opt_acidA = GAP_NOTATION
+                    opt_acidB = acidB
+                elif del_score <= min(mm_score, ins_score):
+                    opt_score = del_score
+                    opt_action = DELETION_A
+                    opt_acidA = acidA
+                    opt_acidB = GAP_NOTATION
+                elif mm_score <= min(ins_score, del_score):
+                    opt_score = mm_score
+                    opt_action = MATCH_A if acidA==acidB else MATCH_G
+                    opt_acidA = acidA
+                    opt_acidB = acidB
+
+                plane[i][j].score = opt_score
+                plane[i][j].action = opt_action
+                plane[i][j].acidA = opt_acidA
+                plane[i][j].acidB = opt_acidB
+        
+        # Finding minimum score in the last column
+        min_score = MAX_DOUBLE
+        min_i, min_j = -1, -1
+        for i in range(nRow):
+            score = plane[i][-1].score + (nRow - i - 1) * C_I
+            if score <= min_score:
+                min_score = score
+                min_i = i
+                min_j = nCol - 1
+        
+        # Finding minimum score in the last row
+        for j in range(nCol):
+            score = plane[-1][j].score + (nCol - j - 1) * C_D
+            if score <= min_score:
+                min_score = score
+                min_i = nRow - 1
+                min_j = j
+    
+        print("min_i", min_i, "min_j", min_j)
+        # Trace back
+        if min_i == 0 or min_j == 0:
+            trace.append(plane[min_i][min_j])
+            return trace
+        
+        i, j = min_i, min_j
+        while i != 0 or j != 0:
+            trace.append(plane[i][j])
+            action = plane[i][j].action
+            if action == MATCH_A or action == MATCH_G:
+                i -= 1
+                j -= 1
+            elif action == INSERTION:
+                i -= 1
+            elif action == DELETION_A:
+                j -= 1
+            else:
+                raise ValueError("Uncaught action.")
+        trace = trace[::-1]
+        return trace
 
     def cube_smith_waterman(self, M, C, data_seq):
         trace = []
@@ -383,10 +477,11 @@ class CVX_ADMM_MSA:
         max_score, max_end_pos = max([(plane[j][END_IDX].score, j) for j in range(1,J+1)])
 
         trace = []
-        trace.insert(0, plane[max_end_pos][END_IDX])
+        trace.append(plane[max_end_pos][END_IDX])
         for j in range(max_end_pos-1, 0, -1):
-            last_d2 = util.dna2T3idx(trace[0].acidA)
-            trace.insert(0, plane[j][last_d2])
+            last_d2 = util.dna2T3idx(trace[-1].acidA)
+            trace.append(plane[j][last_d2])
+        trace = trace[::-1]
         return trace
 
 
@@ -425,7 +520,7 @@ class CVX_ADMM_MSA:
                                     #print((n,i,j,k,m), C[n][i][j][k][m])
                                     continue
                                 C[n][i][j][k][m] = C_M if util.dna2T3idx(allSeqs[n][i]) == m - MTH_BASE_IDX else C_MM
-                            #C[n][i][j][k][m] += PERB_EPS * (np.random.rand())
+                            C[n][i][j][k][m] += PERB_EPS * (np.random.rand())
                             #print((n,i,j,k,m), allSeqs[n][i], C[n][i][j][k][m])
         return C
     

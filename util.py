@@ -14,7 +14,6 @@ def Frobenius_prod(A, B):
     p = A * B
     return np.sum(p, axis=None)
 
-
 def print_C(C):
     T0 = len(C)
     for n in range(T0):
