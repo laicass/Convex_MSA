@@ -6,3 +6,6 @@
 - second subproblem
 - return common matching seq
 - local alignment
+
+# run
+py MSA_Convex.py 72.msa
