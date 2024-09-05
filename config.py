@@ -9,7 +9,7 @@ NUM_THREADS = 6
 
 # Self-defined Constants and Global Variables
 MIN_DOUBLE = -1*1e99
-MAX_DOUBLE = 1e99
+MAX_DOUBLE = float('inf')#1e99
 MAX_INT = float('inf')
 NUM_DNA_TYPE = 4 + 1 + 1  # A T C G + START + END
 NUM_MOVEMENT = 9 + 2 + 2

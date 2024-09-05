@@ -1,6 +1,263 @@
 import numpy as np
 from config import *
+#from dynamic_programming import cube_smith_waterman_GPU
 import util
+
+def smith_waterman(seqA, seqB):
+    plane = [[util.Cell(2) for _ in range(len(seqA)+1)] for _ in range(len(seqB)+1)]
+    trace = []
+    nRow = len(plane)
+    nCol = len(plane[0])
+    for i in range(nRow):
+        for j in range(nCol):
+            plane[i][j].location[0] = i
+            plane[i][j].location[1] = j
+            if i == 0 and j == 0:
+                continue
+            if i == 0 or j == 0:
+                plane[i][j].score = i * C_I + j * C_D
+                plane[i][j].action = INSERTION if i > 0 else DELETION_A
+                plane[i][j].acidA = GAP_NOTATION if i > 0 else seqA[j-1]
+                plane[i][j].acidB = GAP_NOTATION if j > 0 else seqB[i-1]
+                continue
+
+            acidA = seqA[j-1]
+            acidB = seqB[i-1]
+            mscore = C_M if acidA == acidB else C_MM
+            mm_score = plane[i-1][j-1].score + mscore
+
+            del_score = MAX_DOUBLE
+            l = 1
+            while j - l > 0:
+                del_score = min(del_score, plane[i][j-l].score + l * C_D)
+                l+=1
+
+            ins_score = MAX_DOUBLE
+            l = 1
+            while i - l > 0:
+                ins_score = min(ins_score, plane[i-l][j].score + l * C_I)
+                l+=1
+
+            opt_score = MAX_DOUBLE
+            if ins_score <= min(mm_score, del_score):
+                opt_score = ins_score
+                opt_action = INSERTION
+                opt_acidA = GAP_NOTATION
+                opt_acidB = acidB
+            elif del_score <= min(mm_score, ins_score):
+                opt_score = del_score
+                opt_action = DELETION_A
+                opt_acidA = acidA
+                opt_acidB = GAP_NOTATION
+            elif mm_score <= min(ins_score, del_score):
+                opt_score = mm_score
+                opt_action = MATCH_A if acidA==acidB else MATCH_G
+                opt_acidA = acidA
+                opt_acidB = acidB
+
+            plane[i][j].score = opt_score
+            plane[i][j].action = opt_action
+            plane[i][j].acidA = opt_acidA
+            plane[i][j].acidB = opt_acidB
+    
+    # Finding minimum score in the last column
+    min_score = MAX_DOUBLE
+    min_i, min_j = -1, -1
+    for i in range(nRow):
+        score = plane[i][-1].score + (nRow - i - 1) * C_I
+        if score <= min_score:
+            min_score = score
+            min_i = i
+            min_j = nCol - 1
+    
+    # Finding minimum score in the last row
+    for j in range(nCol):
+        score = plane[-1][j].score + (nCol - j - 1) * C_D
+        if score <= min_score:
+            min_score = score
+            min_i = nRow - 1
+            min_j = j
+    #print("min_i", min_i, "min_j", min_j)
+
+    # Trace back
+    if min_i == 0 or min_j == 0:
+        trace.append(plane[min_i][min_j])
+        return trace
+    
+    i, j = min_i, min_j
+    while i != 0 or j != 0:
+        trace.append(plane[i][j])
+        action = plane[i][j].action
+        if action == MATCH_A or action == MATCH_G:
+            i -= 1
+            j -= 1
+        elif action == INSERTION:
+            i -= 1
+        elif action == DELETION_A:
+            j -= 1
+        else:
+            raise ValueError("Uncaught action.")
+    trace = trace[::-1]
+    return trace
+
+def cube_smith_waterman(M, C, data_seq):
+    #print("cpu")
+    trace = []
+    T1, T2, T3 = C.shape[:3]
+    cube = [[[util.Cell(3) for _ in range(T3)] for _ in range(T2)] for _ in range(T1)]
+    for i in range(T1):
+        for j in range(T2):
+            cube[i][j][4].score = MAX_DOUBLE
+    for k in range(T3):
+        cube[0][0][k].score = MAX_DOUBLE
+    acc_ins_cost = C[0][0][4][11] + M[0][0][4][11]
+
+    for i in range(1, T1):
+        acc_ins_cost += C[i][0][4][0] + M[i][0][4][0]
+        cube[i][0][4].score = acc_ins_cost 
+        cube[i][0][4].ans_idx = INSERTION 
+        cube[i][0][4].action = INSERTION 
+        cube[i][0][4].acidA = data_seq[i] 
+        cube[i][0][4].acidB = GAP_NOTATION
+
+    cube[0][0][4].score = C[0][0][4][11] + M[0][0][4][11]
+    cube[0][0][4].ans_idx = MATCH_START
+    cube[0][0][4].action = MATCH_START
+    cube[0][0][4].acidA = '*'
+    cube[0][0][4].acidB = '*'
+    
+    for i in range(T1):
+        for j in range(T2):
+            for k in range(T3):
+                cube[i][j][k].location = [i, j, k]
+                if (i == 0 and j == 0) or k == 4:
+                    continue
+                data_dna = data_seq[i]
+                scores = [0.0] * NUM_MOVEMENT
+                
+                # 1a. get insertion score
+                ins_score = (MAX_DOUBLE if i == 0 else cube[i-1][j][k].score) + \
+                            M[i][j][k][INS_BASE_IDX] + \
+                            C[i][j][k][INS_BASE_IDX]
+                scores[INS_BASE_IDX] = ins_score
+                
+                # 1b. get deletion score
+                for d in range(NUM_DNA_TYPE):
+                    del_score = (MAX_DOUBLE if j == 0 else cube[i][j-1][d].score) + \
+                                M[i][j][d][DEL_BASE_IDX + k] + \
+                                C[i][j][d][DEL_BASE_IDX + k]
+                    scores[DEL_BASE_IDX + d] = del_score
+                
+                # 1c. get max match/mismatch score
+                for d in range(NUM_DNA_TYPE):
+                    mth_score = (MAX_DOUBLE if i == 0 or j == 0 else cube[i-1][j-1][d].score) + \
+                                M[i][j][d][MTH_BASE_IDX + k] + \
+                                C[i][j][d][MTH_BASE_IDX + k]
+                    scores[MTH_BASE_IDX + d] = mth_score
+
+                # 1d. get optimal action for the current cell
+                min_score = min(scores)
+                if min_score == MAX_DOUBLE:
+                    min_ansid = -1
+                else:
+                    min_ansid = scores.index(min_score)
+                if min_ansid == INS_BASE_IDX:
+                    min_action = INSERTION
+                elif DEL_BASE_IDX <= min_ansid < MTH_BASE_IDX:
+                    min_action = list(util.action2str.keys())[DEL_BASE_IDX + k]
+                elif MTH_BASE_IDX <= min_ansid < NUM_MOVEMENT:
+                    min_action = list(util.action2str.keys())[MTH_BASE_IDX + k]
+                else:
+                    min_action = 6
+                #print(f"min_ansid = {min_ansid}, min_score = {min_score}, min_action = {min_action}")
+                
+                # 1e. assign the optimal score/action to the cell
+                cube[i][j][k].score = min_score
+                cube[i][j][k].action = min_action
+                cube[i][j][k].ans_idx = min_ansid
+                act = cube[i][j][k].action
+                if act == INSERTION:
+                    cube[i][j][k].acidA = data_dna
+                    cube[i][j][k].acidB = GAP_NOTATION
+                elif DEL_BASE_IDX <= act < MTH_BASE_IDX:
+                    cube[i][j][k].acidA = GAP_NOTATION
+                    cube[i][j][k].acidB = util.T3idx2dna(act - DEL_BASE_IDX)
+                elif act >= MTH_BASE_IDX or act < NUM_DNA_TYPE:
+                    cube[i][j][k].acidA = data_dna
+                    cube[i][j][k].acidB = util.T3idx2dna(act - MTH_BASE_IDX)
+                else:
+                    print("uncatched action.", act)
+                
+                #print(act, util.dna2T3idx(cube[i][j][k].acidA), util.dna2T3idx(cube[i][j][k].acidB))
+    # 3. Track back
+    tmp = [x[END_IDX].score for x in (cube[T1-1])[1:T2]]
+    global_min_score = min(tmp)
+    gmin_i = T1-1
+    gmin_j = -1
+    gmin_k = END_IDX
+    gmin_j = tmp.index(global_min_score) + 1
+    
+    if gmin_i == 0 or gmin_j == 0:
+        trace.append(cube[gmin_i][gmin_j][gmin_k])
+        return
+    i = gmin_i; j = gmin_j; k = gmin_k
+    while i >= 0 and j >= 0:
+        trace.insert(0, cube[i][j][k])
+        act = cube[i][j][k].action
+        ans_idx = cube[i][j][k].ans_idx
+        if act == INS_BASE_IDX:
+            i-=1
+        elif DEL_BASE_IDX <= act and act < MTH_BASE_IDX:
+            j-=1
+            k = (ans_idx - MTH_BASE_IDX) if (ans_idx >= MTH_BASE_IDX) else (ans_idx - DEL_BASE_IDX)
+        elif MTH_BASE_IDX <= act and act < NUM_MOVEMENT:
+            i-=1
+            j-=1
+            k = (ans_idx - MTH_BASE_IDX) if (ans_idx >= MTH_BASE_IDX) else (ans_idx - DEL_BASE_IDX)
+        else:
+            pass
+
+    # 4. reintepret it as 4-d data structure
+    S_atom = []
+    for t in range(len(trace)):
+        i,j,k = trace[t].location
+        m = trace[t].action
+        S_atom.append(i)
+        S_atom.append(j)
+        if t == 0:
+            S_atom.append(4)
+        else:
+            S_atom.append(trace[t-1].location[2])
+        S_atom.append(m)
+    return S_atom, trace
+
+def refined_viterbi_algo(transition, mat_insertion):
+    J, D1, D2 = transition.shape
+    plane = [[util.Cell(2) for _ in range(D2)] for _ in range(J+1)]
+    for j in range(J):
+        t = np.array([c.score for c in plane[j]]) + mat_insertion[j] # size = D1
+        score_map = (transition[j].T + t)[:,:-1]
+        max_score = np.max(score_map, axis=1)
+        max_d1 = np.argmax(score_map, axis=1)
+    
+        jp = j + 1
+        for d2 in range(D2):
+            jp = j + 1
+            plane[jp][d2].location[0] = j
+            plane[jp][d2].location[1] = max_d1[d2]
+            plane[jp][d2].score = max_score[d2]
+            plane[jp][d2].acidA = util.T3idx2dna(max_d1[d2])
+            plane[jp][d2].acidB = util.T3idx2dna(d2)
+    
+    max_score, max_end_pos = max([(plane[j][END_IDX].score, j) for j in range(1,J+1)])
+
+    trace = []
+    trace.append(plane[max_end_pos][END_IDX])
+    for j in range(max_end_pos-1, 0, -1):
+        last_d2 = util.dna2T3idx(trace[-1].acidA)
+        trace.append(plane[j][last_d2])
+    trace = trace[::-1]
+    return trace
 
 class CVX_ADMM_MSA:
     def __init__(self, allSeqs, lenSeqs, T2):
@@ -51,7 +308,8 @@ class CVX_ADMM_MSA:
         M = Y - mu * W_2
         alpha_lookup = {}
         for fw_iter in range(MAX_1st_FW_ITER+1):
-            S_atom, trace = self.cube_smith_waterman(M, C, data_seq)
+            S_atom, trace = cube_smith_waterman(M, C, data_seq)
+            #S_atom, trace = cube_smith_waterman_GPU(M, C, data_seq)
             S_atom = np.array(S_atom).reshape((-1,4))
             S_atom = tuple(map(tuple, S_atom))
             gfw_W = gfw_S = 0.0
@@ -132,7 +390,7 @@ class CVX_ADMM_MSA:
         alpha_lookup = {}
 
         for fw_iter in range(MAX_2nd_FW_ITER+1):
-            trace = self.refined_viterbi_algo(tensor, mat_insertion)
+            trace = refined_viterbi_algo(tensor, mat_insertion)
             S_atom = []
             for t in trace:
                 sj = t.location[0]
@@ -228,261 +486,6 @@ class CVX_ADMM_MSA:
         
         recSeq = [t.acidB for t in trace]
         return recSeq
-    
-    @staticmethod
-    def smith_waterman(seqA, seqB):
-        plane = [[util.Cell(2) for _ in range(len(seqA)+1)] for _ in range(len(seqB)+1)]
-        trace = []
-        nRow = len(plane)
-        nCol = len(plane[0])
-        for i in range(nRow):
-            for j in range(nCol):
-                plane[i][j].location[0] = i
-                plane[i][j].location[1] = j
-                if i == 0 and j == 0:
-                    continue
-                if i == 0 or j == 0:
-                    plane[i][j].score = i * C_I + j * C_D
-                    plane[i][j].action = INSERTION if i > 0 else DELETION_A
-                    plane[i][j].acidA = GAP_NOTATION if i > 0 else seqA[j-1]
-                    plane[i][j].acidB = GAP_NOTATION if j > 0 else seqB[i-1]
-                    continue
-
-                acidA = seqA[j-1]
-                acidB = seqB[i-1]
-                mscore = C_M if acidA == acidB else C_MM
-                mm_score = plane[i-1][j-1].score + mscore
-
-                del_score = MAX_DOUBLE
-                l = 1
-                while j - l > 0:
-                    del_score = min(del_score, plane[i][j-l].score + l * C_D)
-                    l+=1
-
-                ins_score = MAX_DOUBLE
-                l = 1
-                while i - l > 0:
-                    ins_score = min(ins_score, plane[i-l][j].score + l * C_I)
-                    l+=1
-
-                opt_score = MAX_DOUBLE
-                if ins_score <= min(mm_score, del_score):
-                    opt_score = ins_score
-                    opt_action = INSERTION
-                    opt_acidA = GAP_NOTATION
-                    opt_acidB = acidB
-                elif del_score <= min(mm_score, ins_score):
-                    opt_score = del_score
-                    opt_action = DELETION_A
-                    opt_acidA = acidA
-                    opt_acidB = GAP_NOTATION
-                elif mm_score <= min(ins_score, del_score):
-                    opt_score = mm_score
-                    opt_action = MATCH_A if acidA==acidB else MATCH_G
-                    opt_acidA = acidA
-                    opt_acidB = acidB
-
-                plane[i][j].score = opt_score
-                plane[i][j].action = opt_action
-                plane[i][j].acidA = opt_acidA
-                plane[i][j].acidB = opt_acidB
-        
-        # Finding minimum score in the last column
-        min_score = MAX_DOUBLE
-        min_i, min_j = -1, -1
-        for i in range(nRow):
-            score = plane[i][-1].score + (nRow - i - 1) * C_I
-            if score <= min_score:
-                min_score = score
-                min_i = i
-                min_j = nCol - 1
-        
-        # Finding minimum score in the last row
-        for j in range(nCol):
-            score = plane[-1][j].score + (nCol - j - 1) * C_D
-            if score <= min_score:
-                min_score = score
-                min_i = nRow - 1
-                min_j = j
-    
-        print("min_i", min_i, "min_j", min_j)
-        # Trace back
-        if min_i == 0 or min_j == 0:
-            trace.append(plane[min_i][min_j])
-            return trace
-        
-        i, j = min_i, min_j
-        while i != 0 or j != 0:
-            trace.append(plane[i][j])
-            action = plane[i][j].action
-            if action == MATCH_A or action == MATCH_G:
-                i -= 1
-                j -= 1
-            elif action == INSERTION:
-                i -= 1
-            elif action == DELETION_A:
-                j -= 1
-            else:
-                raise ValueError("Uncaught action.")
-        trace = trace[::-1]
-        return trace
-
-    def cube_smith_waterman(self, M, C, data_seq):
-        trace = []
-        T1, T2, T3 = C.shape[:3]
-        cube = [[[util.Cell(3) for _ in range(T3)] for _ in range(T2)] for _ in range(T1)]
-        for i in range(T1):
-            for j in range(T2):
-                cube[i][j][4].score = MAX_DOUBLE
-        for k in range(T3):
-            cube[0][0][k].score = MAX_DOUBLE
-        acc_ins_cost = C[0][0][4][11] + M[0][0][4][11]
-
-        for i in range(1, T1):
-            acc_ins_cost += C[i][0][4][0] + M[i][0][4][0]
-            cube[i][0][4].score = acc_ins_cost 
-            cube[i][0][4].ans_idx = INSERTION 
-            cube[i][0][4].action = INSERTION 
-            cube[i][0][4].acidA = data_seq[i] 
-            cube[i][0][4].acidB = GAP_NOTATION
-
-        cube[0][0][4].score = C[0][0][4][11] + M[0][0][4][11]
-        cube[0][0][4].ans_idx = MATCH_START
-        cube[0][0][4].action = MATCH_START
-        cube[0][0][4].acidA = '*'
-        cube[0][0][4].acidB = '*'
-
-        for i in range(T1):
-            for j in range(T2):
-                for k in range(T3):
-                    cube[i][j][k].location = [i, j, k]
-                    if (i == 0 and j == 0) or k == 4:
-                        continue
-                    data_dna = data_seq[i]
-                    scores = [0.0] * NUM_MOVEMENT
-                    
-                    # 1a. get insertion score
-                    ins_score = (MAX_DOUBLE if i == 0 else cube[i-1][j][k].score) + \
-                                M[i][j][k][INS_BASE_IDX] + \
-                                C[i][j][k][INS_BASE_IDX]
-                    scores[INS_BASE_IDX] = ins_score
-                    
-                    # 1b. get deletion score
-                    for d in range(NUM_DNA_TYPE):
-                        del_score = (MAX_DOUBLE if j == 0 else cube[i][j-1][d].score) + \
-                                    M[i][j][d][DEL_BASE_IDX + k] + \
-                                    C[i][j][d][DEL_BASE_IDX + k]
-                        scores[DEL_BASE_IDX + d] = del_score
-                    
-                    # 1c. get max match/mismatch score
-                    for d in range(NUM_DNA_TYPE):
-                        mth_score = (MAX_DOUBLE if i == 0 or j == 0 else cube[i-1][j-1][d].score) + \
-                                    M[i][j][d][MTH_BASE_IDX + k] + \
-                                    C[i][j][d][MTH_BASE_IDX + k]
-                        scores[MTH_BASE_IDX + d] = mth_score
-
-                    # 1d. get optimal action for the current cell
-                    min_score = min(scores)
-                    if min_score == MAX_DOUBLE:
-                        min_ansid = -1
-                    else:
-                        min_ansid = scores.index(min_score)
-                    if min_ansid == INS_BASE_IDX:
-                        min_action = INSERTION
-                    elif DEL_BASE_IDX <= min_ansid < MTH_BASE_IDX:
-                        min_action = list(util.action2str.keys())[DEL_BASE_IDX + k]
-                    elif MTH_BASE_IDX <= min_ansid < NUM_MOVEMENT:
-                        min_action = list(util.action2str.keys())[MTH_BASE_IDX + k]
-                    else:
-                        min_action = 6
-                    #print(f", min_ansid = {min_ansid}, min_score = {int(min_score)}, min_action = {min_action}")
-
-                    # 1e. assign the optimal score/action to the cell
-                    cube[i][j][k].score = min_score
-                    cube[i][j][k].action = min_action
-                    cube[i][j][k].ans_idx = min_ansid
-                    act = cube[i][j][k].action
-                    if act == INSERTION:
-                        cube[i][j][k].acidA = data_dna
-                        cube[i][j][k].acidB = GAP_NOTATION
-                    elif DEL_BASE_IDX <= act < MTH_BASE_IDX:
-                        cube[i][j][k].acidA = GAP_NOTATION
-                        cube[i][j][k].acidB = util.T3idx2dna(act - DEL_BASE_IDX)
-                    elif act >= MTH_BASE_IDX or act < NUM_DNA_TYPE:
-                        cube[i][j][k].acidA = data_dna
-                        cube[i][j][k].acidB = util.T3idx2dna(act - MTH_BASE_IDX)
-                    else:
-                        print("uncatched action.", act)
-
-        # 3. Track back
-        tmp = [x[END_IDX].score for x in (cube[T1-1])[1:T2]]
-        global_min_score = min(tmp)
-        gmin_i = T1-1
-        gmin_j = -1
-        gmin_k = END_IDX
-        gmin_j = tmp.index(global_min_score) + 1
-        
-        if gmin_i == 0 or gmin_j == 0:
-            trace.append(cube[gmin_i][gmin_j][gmin_k])
-            return
-        i = gmin_i; j = gmin_j; k = gmin_k
-        while i >= 0 and j >= 0:
-            trace.insert(0, cube[i][j][k])
-            act = cube[i][j][k].action
-            ans_idx = cube[i][j][k].ans_idx
-            if act == INS_BASE_IDX:
-                i-=1
-            elif DEL_BASE_IDX <= act and act < MTH_BASE_IDX:
-                j-=1
-                k = (ans_idx - MTH_BASE_IDX) if (ans_idx >= MTH_BASE_IDX) else (ans_idx - DEL_BASE_IDX)
-            elif MTH_BASE_IDX <= act and act < NUM_MOVEMENT:
-                i-=1
-                j-=1
-                k = (ans_idx - MTH_BASE_IDX) if (ans_idx >= MTH_BASE_IDX) else (ans_idx - DEL_BASE_IDX)
-            else:
-                pass
-
-        # 4. reintepret it as 4-d data structure
-        S_atom = []
-        for t in range(len(trace)):
-            i,j,k = trace[t].location
-            m = trace[t].action
-            S_atom.append(i)
-            S_atom.append(j)
-            if t == 0:
-                S_atom.append(4)
-            else:
-                S_atom.append(trace[t-1].location[2])
-            S_atom.append(m)
-        return S_atom, trace
-    
-    def refined_viterbi_algo(self, transition, mat_insertion):
-        J, D1, D2 = transition.shape
-        plane = [[util.Cell(2) for _ in range(D2)] for _ in range(J+1)]
-        for j in range(J):
-            t = np.array([c.score for c in plane[j]]) + mat_insertion[j] # size = D1
-            score_map = (transition[j].T + t)[:,:-1]
-            max_score = np.max(score_map, axis=1)
-            max_d1 = np.argmax(score_map, axis=1)
-        
-            jp = j + 1
-            for d2 in range(D2):
-                jp = j + 1
-                plane[jp][d2].location[0] = j
-                plane[jp][d2].location[1] = max_d1[d2]
-                plane[jp][d2].score = max_score[d2]
-                plane[jp][d2].acidA = util.T3idx2dna(max_d1[d2])
-                plane[jp][d2].acidB = util.T3idx2dna(d2)
-        
-        max_score, max_end_pos = max([(plane[j][END_IDX].score, j) for j in range(1,J+1)])
-
-        trace = []
-        trace.append(plane[max_end_pos][END_IDX])
-        for j in range(max_end_pos-1, 0, -1):
-            last_d2 = util.dna2T3idx(trace[-1].acidA)
-            trace.append(plane[j][last_d2])
-        trace = trace[::-1]
-        return trace
 
 
     def set_C(self, C, allSeqs):
